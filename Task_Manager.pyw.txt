@@ -1,0 +1,479 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+import json
+import os
+import threading
+import time
+
+# Use user's Documents folder for data files to avoid permission issues
+import os.path
+
+# Get user's documents folder path
+user_home = os.path.expanduser("~")
+documents_path = os.path.join(user_home, "Documents", "TaskScheduler")
+
+# Create the directory if it doesn't exist
+if not os.path.exists(documents_path):
+    os.makedirs(documents_path)
+
+TASKS_FILE = os.path.join(documents_path, 'tasks.json')
+STATUS_FILE = os.path.join(documents_path, 'status.json')
+
+# Helper functions to load and save data
+def load_data(file, default):
+    try:
+        if os.path.exists(file):
+            with open(file, 'r') as f:
+                return json.load(f)
+        return default
+    except Exception as e:
+        print(f"Error loading data from {file}: {str(e)}")
+        return default
+
+def save_data(file, data):
+    try:
+        # Create parent directory if it doesn't exist
+        directory = os.path.dirname(file)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            
+        with open(file, 'w') as f:
+            json.dump(data, f, indent=4)
+        return True
+    except Exception as e:
+        print(f"Error saving data to {file}: {str(e)}")
+        messagebox.showerror("Error", f"Couldn't save data: {str(e)}")
+        return False
+
+class TaskScheduler:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Task Scheduler")
+        self.root.geometry("600x400")
+
+        self.tasks = load_data(TASKS_FILE, {})
+        self.status = load_data(STATUS_FILE, {})
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Main container to hold both task sections
+        main_container = tk.Frame(self.root)
+        main_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Upper frame for active tasks
+        self.active_frame = tk.LabelFrame(main_container, text="Active Tasks", padx=5, pady=5)
+        self.active_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Add listbox with scrollbar for active tasks
+        active_scrollbar = tk.Scrollbar(self.active_frame)
+        active_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.active_listbox = tk.Listbox(self.active_frame, width=50, selectmode=tk.MULTIPLE, font=("Arial", 10))
+        self.active_listbox.pack(fill=tk.BOTH, expand=True)
+        
+        # Connect scrollbar and listbox
+        self.active_listbox.config(yscrollcommand=active_scrollbar.set)
+        active_scrollbar.config(command=self.active_listbox.yview)
+        
+        # Lower frame for completed tasks
+        self.completed_frame = tk.LabelFrame(main_container, text="Completed Tasks", padx=5, pady=5)
+        self.completed_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+
+        # Add listbox with scrollbar for completed tasks
+        completed_scrollbar = tk.Scrollbar(self.completed_frame)
+        completed_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.completed_listbox = tk.Listbox(self.completed_frame, width=50, selectmode=tk.MULTIPLE, 
+                                        font=("Arial", 10), fg="green")
+        self.completed_listbox.pack(fill=tk.BOTH, expand=True)
+        
+        # Connect scrollbar and listbox
+        self.completed_listbox.config(yscrollcommand=completed_scrollbar.set)
+        completed_scrollbar.config(command=self.completed_listbox.yview)
+
+        # Status label at the bottom
+        self.status_label = tk.Label(main_container, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Refresh tasks to populate both listboxes
+        self.refresh_tasks()
+
+        # Side panel
+        self.side_panel = tk.Frame(self.root)
+        self.side_panel.pack(side=tk.RIGHT, fill=tk.Y)
+
+        tk.Button(self.side_panel, text="Add Task", command=self.add_task_window, width=15).pack(pady=5)
+        tk.Button(self.side_panel, text="Delete Task", command=self.delete_task, width=15).pack(pady=5)
+        tk.Button(self.side_panel, text="Execute Selected", command=self.execute_selected_tasks, width=15).pack(pady=5)
+        tk.Button(self.side_panel, text="Execute All", command=self.execute_all_tasks, width=15).pack(pady=5)
+        tk.Button(self.side_panel, text="View All Tasks", command=self.view_all_tasks, width=15).pack(pady=5)
+        tk.Button(self.side_panel, text="Clear Completed", command=self.clear_completed_tasks, width=15).pack(pady=5)
+        
+        # Display data file location
+        file_location = f"Data stored at: {os.path.dirname(TASKS_FILE)}"
+        location_label = tk.Label(self.side_panel, text=file_location, wraplength=150, 
+                                  font=("Arial", 8), fg="gray")
+        location_label.pack(side=tk.BOTTOM, pady=10)
+
+    def refresh_tasks(self):
+        # Clear both listboxes
+        self.active_listbox.delete(0, tk.END)
+        self.completed_listbox.delete(0, tk.END)
+        
+        active_tasks = 0
+        completed_tasks = 0
+        
+        try:
+            # No tasks case
+            if not self.tasks:
+                self.active_listbox.insert(tk.END, "No tasks available. Add a task to get started.")
+                self.status_label.config(text="No tasks")
+                return
+                
+            # Sort tasks by priority (lower numbers first)
+            sorted_tasks = sorted(self.tasks.items(), key=lambda x: int(x[1].get('priority', 999)))
+            
+            for task_id, task in sorted_tasks:
+                priority = task.get('priority', 'None')
+                status = self.status.get(task_id, "Pending")
+                task_text = f"[Priority: {priority}] {task['title']}"
+                
+                if status == "Completed":
+                    # Add to completed tasks list
+                    self.completed_listbox.insert(tk.END, task_text)
+                    completed_tasks += 1
+                else:
+                    # Add to active tasks list
+                    self.active_listbox.insert(tk.END, f"{task_text} - {status}")
+                    active_tasks += 1
+            
+            # Update status label
+            self.status_label.config(text=f"Tasks: {len(self.tasks)} | Active: {active_tasks} | Completed: {completed_tasks}")
+            
+            # If there are no active tasks, show a message
+            if active_tasks == 0:
+                self.active_listbox.insert(tk.END, "No active tasks. All tasks completed!")
+                
+            # If there are no completed tasks, show a message
+            if completed_tasks == 0:
+                self.completed_listbox.insert(tk.END, "No completed tasks yet.")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to refresh task list: {str(e)}")
+            self.status_label.config(text="Error loading tasks")
+
+    def add_task_window(self):
+        win = tk.Toplevel(self.root)
+        win.title("Add Task")
+        win.geometry("400x300")
+
+        tk.Label(win, text="Title").pack()
+        title_entry = tk.Entry(win, width=40)
+        title_entry.pack()
+
+        tk.Label(win, text="Description").pack()
+        desc_box = tk.Text(win, height=5, width=40)
+        desc_box.pack()
+
+        tk.Label(win, text="Timer (seconds)").pack()
+        timer_spin = tk.Spinbox(win, from_=1, to=3600, width=10)
+        timer_spin.pack()
+        
+        tk.Label(win, text="Priority (1-10, lower is higher priority)").pack()
+        priority_spin = tk.Spinbox(win, from_=1, to=10, width=10)
+        priority_spin.pack()
+
+        def save_task():
+            title = title_entry.get().strip()
+            desc = desc_box.get("1.0", tk.END).strip()
+            
+            try:
+                timer = int(timer_spin.get())
+                priority = int(priority_spin.get())
+            except ValueError:
+                messagebox.showerror("Error", "Timer and Priority must be numbers.")
+                return
+
+            if not title:
+                messagebox.showerror("Error", "Title is required.")
+                return
+                
+            # Check for duplicate titles
+            for task in self.tasks.values():
+                if task['title'] == title:
+                    messagebox.showerror("Error", "A task with this title already exists.")
+                    return
+
+            # Create a new task ID (ensure it's a string)
+            task_ids = list(map(int, self.tasks.keys())) if self.tasks else [0]
+            new_id = str(max(task_ids) + 1)
+            
+            self.tasks[new_id] = {
+                "title": title, 
+                "desc": desc, 
+                "timer": timer,
+                "priority": priority
+            }
+            self.status[new_id] = "Pending"
+
+            try:
+                save_data(TASKS_FILE, self.tasks)
+                save_data(STATUS_FILE, self.status)
+                self.refresh_tasks()
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save task: {str(e)}")
+
+        tk.Button(win, text="Save Task", command=save_task).pack(pady=10)
+
+    def delete_task(self):
+        # First check if any task is selected in the active tasks
+        active_sel = self.active_listbox.curselection()
+        completed_sel = self.completed_listbox.curselection()
+        
+        if not active_sel and not completed_sel:
+            messagebox.showinfo("Info", "Please select a task to delete.")
+            return
+            
+        # Handle active tasks deletion
+        if active_sel:
+            active_tasks = [task for task_id, task in sorted(self.tasks.items(), 
+                             key=lambda x: int(x[1].get('priority', 999))) 
+                             if self.status.get(task_id, "Pending") != "Completed"]
+            
+            for index in reversed(active_sel):
+                if index < len(active_tasks):
+                    task = active_tasks[index]
+                    # Find the task_id based on the task
+                    for task_id, t in self.tasks.items():
+                        if t.get('title') == task.get('title'):
+                            del self.tasks[task_id]
+                            self.status.pop(task_id, None)
+                            break
+        
+        # Handle completed tasks deletion
+        if completed_sel:
+            completed_tasks = [task for task_id, task in sorted(self.tasks.items(), 
+                               key=lambda x: int(x[1].get('priority', 999))) 
+                               if self.status.get(task_id) == "Completed"]
+            
+            for index in reversed(completed_sel):
+                if index < len(completed_tasks):
+                    task = completed_tasks[index]
+                    # Find the task_id based on the task
+                    for task_id, t in self.tasks.items():
+                        if t.get('title') == task.get('title') and self.status.get(task_id) == "Completed":
+                            del self.tasks[task_id]
+                            self.status.pop(task_id, None)
+                            break
+
+        save_data(TASKS_FILE, self.tasks)
+        save_data(STATUS_FILE, self.status)
+        self.refresh_tasks()
+        
+    def clear_completed_tasks(self):
+        """Remove all completed tasks"""
+        if not any(status == "Completed" for status in self.status.values()):
+            messagebox.showinfo("Info", "No completed tasks to clear.")
+            return
+            
+        # Ask for confirmation
+        confirm = messagebox.askyesno("Confirm", "Are you sure you want to delete all completed tasks?")
+        if not confirm:
+            return
+            
+        # Get all task IDs of completed tasks
+        completed_task_ids = [task_id for task_id, status in self.status.items() 
+                             if status == "Completed"]
+                             
+        # Delete each completed task
+        for task_id in completed_task_ids:
+            del self.tasks[task_id]
+            del self.status[task_id]
+            
+        save_data(TASKS_FILE, self.tasks)
+        save_data(STATUS_FILE, self.status)
+        self.refresh_tasks()
+        messagebox.showinfo("Success", f"Cleared {len(completed_task_ids)} completed tasks.")
+
+    def execute_task(self, task_id):
+        task = self.tasks[task_id]
+        duration = task["timer"]
+
+        exec_win = tk.Toplevel(self.root)
+        exec_win.title("Executing Task")
+        exec_win.geometry("400x200")
+
+        tk.Label(exec_win, text=f"Title: {task['title']}", font=("Arial", 14)).pack(pady=5)
+        tk.Label(exec_win, text=f"Description: {task['desc']}").pack(pady=5)
+
+        progress_label = tk.Label(exec_win, text=f"Progress: 0/{duration} seconds (0%)")
+        progress_label.pack(pady=10)
+
+        time_label = tk.Label(exec_win, text=f"Time left: {duration} sec")
+        time_label.pack()
+
+        def countdown():
+            for t in range(duration, -1, -1):
+                progress = duration - t
+                percent = int((progress / duration) * 100)
+                progress_label.config(text=f"Progress: {progress}/{duration} seconds ({percent}%)")
+                time_label.config(text=f"Time left: {t} sec")
+                time.sleep(1)
+                if t == 0:
+                    messagebox.showinfo("Task Complete", f"Task '{task['title']}' Completed!")
+                    self.status[task_id] = "Completed"
+                    save_data(STATUS_FILE, self.status)
+                    self.refresh_tasks()
+                    exec_win.destroy()
+                    return
+
+        threading.Thread(target=countdown, daemon=True).start()
+        return exec_win
+
+    def execute_selected_tasks(self):
+        # Get selected tasks from active list only
+        sel = self.active_listbox.curselection()
+        if not sel:
+            messagebox.showinfo("Info", "Please select task(s) to execute.")
+            return
+
+        # Get active tasks
+        active_tasks = [(task_id, task) for task_id, task in sorted(self.tasks.items(), 
+                         key=lambda x: int(x[1].get('priority', 999))) 
+                         if self.status.get(task_id, "Pending") != "Completed"]
+        
+        # Get selected task IDs, sorted by priority
+        selected_task_ids = []
+        for i in sel:
+            if i < len(active_tasks):
+                selected_task_ids.append(active_tasks[i][0])
+        
+        if not selected_task_ids:
+            return
+        
+        def execute_tasks_in_sequence():
+            for task_id in selected_task_ids:
+                exec_win = self.execute_task(task_id)
+                # Wait for the window to be destroyed before continuing
+                self.root.wait_window(exec_win)
+        
+        # Run the execution in a separate thread
+        threading.Thread(target=execute_tasks_in_sequence, daemon=True).start()
+
+    def execute_all_tasks(self):
+        # Only execute active tasks
+        active_tasks = [(task_id, task) for task_id, task in sorted(self.tasks.items(), 
+                         key=lambda x: int(x[1].get('priority', 999))) 
+                         if self.status.get(task_id, "Pending") != "Completed"]
+        
+        if not active_tasks:
+            messagebox.showinfo("Info", "No active tasks available to execute.")
+            return
+            
+        # Ask for confirmation if there are many tasks
+        if len(active_tasks) > 3:
+            confirm = messagebox.askyesno("Confirm", 
+                f"You are about to execute {len(active_tasks)} tasks sequentially.\nContinue?")
+            if not confirm:
+                return
+        
+        def execute_tasks_in_sequence():
+            for task_id, _ in active_tasks:
+                exec_win = self.execute_task(task_id)
+                # Wait for the window to be destroyed before continuing
+                self.root.wait_window(exec_win)
+        
+        # Run the execution in a separate thread
+        threading.Thread(target=execute_tasks_in_sequence, daemon=True).start()
+
+    def view_all_tasks(self):
+        if not self.tasks:
+            messagebox.showinfo("Info", "No tasks available.")
+            return
+            
+        view_win = tk.Toplevel(self.root)
+        view_win.title("All Tasks")
+        view_win.geometry("600x500")
+        
+        # Create a notebook with tabs
+        notebook = ttk.Notebook(view_win)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Create tabs for Active and Completed tasks
+        active_tab = ttk.Frame(notebook)
+        completed_tab = ttk.Frame(notebook)
+        
+        notebook.add(active_tab, text="Active Tasks")
+        notebook.add(completed_tab, text="Completed Tasks")
+        
+        # Create text widgets for both tabs
+        active_text = tk.Text(active_tab, wrap=tk.WORD)
+        active_text.pack(fill=tk.BOTH, expand=True)
+        
+        completed_text = tk.Text(completed_tab, wrap=tk.WORD)
+        completed_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Sort tasks by priority
+        sorted_tasks = sorted(self.tasks.items(), key=lambda x: int(x[1].get('priority', 999)))
+        
+        # Add tasks to appropriate tabs
+        active_count = 0
+        completed_count = 0
+        
+        for task_id, task in sorted_tasks:
+            status = self.status.get(task_id, "Pending")
+            priority = task.get('priority', 'None')
+            
+            task_info = f"Task ID: {task_id}\n"
+            task_info += f"Title: {task['title']}\n"
+            task_info += f"Description: {task['desc']}\n"
+            task_info += f"Timer: {task['timer']} seconds\n"
+            task_info += f"Priority: {priority}\n"
+            task_info += f"Status: {status}\n"
+            task_info += "=" * 40 + "\n\n"
+            
+            if status == "Completed":
+                completed_text.insert(tk.END, task_info)
+                completed_count += 1
+            else:
+                active_text.insert(tk.END, task_info)
+                active_count += 1
+        
+        # If no tasks in a category, add a message
+        if active_count == 0:
+            active_text.insert(tk.END, "No active tasks.")
+            
+        if completed_count == 0:
+            completed_text.insert(tk.END, "No completed tasks.")
+        
+        # Make text widgets read-only
+        active_text.config(state=tk.DISABLED)
+        completed_text.config(state=tk.DISABLED)
+        
+        # Add a summary at the top of the window
+        summary_label = tk.Label(view_win, 
+                                text=f"Total Tasks: {len(self.tasks)} | Active: {active_count} | Completed: {completed_count}",
+                                font=("Arial", 10, "bold"))
+        summary_label.pack(side=tk.TOP, pady=5, before=notebook)
+
+if __name__ == "__main__":
+    try:
+        root = tk.Tk()
+        app = TaskScheduler(root)
+        # Show a welcome message when the app starts
+        messagebox.showinfo("Welcome", f"Task Scheduler started!\n\nData will be saved in:\n{os.path.dirname(TASKS_FILE)}")
+        root.mainloop()
+    except Exception as e:
+        # If app fails to start properly, show error message
+        print(f"Application error: {str(e)}")
+        try:
+            messagebox.showerror("Error", 
+                f"Application failed to start properly.\n\n"
+                f"Error: {str(e)}\n\n"
+                f"Try running the app from a different folder or as administrator."
+            )
+        except:
+            # If messagebox fails too, print to console as last resort
+            print("Critical error - couldn't display error message box.")
